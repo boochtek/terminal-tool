@@ -4,7 +4,7 @@
 
 set -euo pipefail
 
-VERSION="0.9.1"
+VERSION="0.9.2"
 
 # Detect terminal type
 is_iterm2() {
@@ -63,6 +63,33 @@ iterm2_osc() {
     printf '\033]1337;%s\007' "$*"
 }
 
+# Helper: warn if not running in iTerm2
+warn_if_not_iterm2() {
+    local feature="${1:-this feature}"
+    if ! is_iterm2; then
+        echo "Warning: $feature only works in iTerm2" >&2
+    fi
+}
+
+# Helper: URL-encode a path for OSC 7
+url_encode_path() {
+    local path="$1"
+    local encoded=""
+    local i char
+    for ((i = 0; i < ${#path}; i++)); do
+        char="${path:i:1}"
+        case "$char" in
+            [a-zA-Z0-9/_.-])
+                encoded+="$char"
+                ;;
+            *)
+                encoded+=$(printf '%%%02X' "'$char")
+                ;;
+        esac
+    done
+    printf '%s' "$encoded"
+}
+
 #
 # COMMAND IMPLEMENTATIONS
 #
@@ -83,12 +110,10 @@ cmd_badge() {
         echo "Sets iTerm2 badge (corner watermark). Use '' to clear." >&2
         exit 1
     fi
-    if ! is_iterm2; then
-        echo "Warning: badge only works in iTerm2" >&2
-    fi
+    warn_if_not_iterm2 "badge"
     # Badge format is base64 encoded
     local encoded
-    encoded=$(printf '%s' "$*" | base64)
+    encoded=$(printf '%s' "$*" | base64 | tr -d '\n')
     iterm2_osc "SetBadgeFormat=${encoded}"
 }
 
@@ -123,13 +148,20 @@ cmd_notify() {
 
 cmd_cwd() {
     local dir="${1:-$PWD}"
+    # Validate directory exists
+    if [[ ! -d "$dir" ]]; then
+        echo "Error: Directory not found: $dir" >&2
+        exit 1
+    fi
     # Expand to absolute path
     dir=$(cd "$dir" && pwd)
     # OSC 7 sets the working directory (used by Terminal.app for new tabs)
-    # Format: file://hostname/path
+    # Format: file://hostname/path (path must be URL-encoded)
     local hostname
     hostname=$(hostname)
-    printf '\033]7;file://%s%s\007' "$hostname" "$dir"
+    local encoded_dir
+    encoded_dir=$(url_encode_path "$dir")
+    printf '\033]7;file://%s%s\007' "$hostname" "$encoded_dir"
 }
 
 cmd_profile() {
@@ -138,24 +170,18 @@ cmd_profile() {
         echo "Switches to the named iTerm2 profile." >&2
         exit 1
     fi
-    if ! is_iterm2; then
-        echo "Warning: profile only works in iTerm2" >&2
-    fi
+    warn_if_not_iterm2 "profile"
     iterm2_osc "SetProfile=$1"
 }
 
 cmd_mark() {
-    if ! is_iterm2; then
-        echo "Warning: mark only works in iTerm2" >&2
-    fi
+    warn_if_not_iterm2 "mark"
     # Set a mark at the current cursor position for navigation
     iterm2_osc "SetMark"
 }
 
 cmd_attention() {
-    if ! is_iterm2; then
-        echo "Warning: attention only works in iTerm2" >&2
-    fi
+    warn_if_not_iterm2 "attention"
     # Request attention - bounces dock icon if window not focused
     # yes=start, no=stop, once=bounce once, fireworks=special effect
     local mode="${1:-yes}"
@@ -168,36 +194,40 @@ cmd_progress() {
         echo "Shows progress indicator in iTerm2 tab bar." >&2
         exit 1
     fi
-    if ! is_iterm2; then
-        echo "Warning: progress only works in iTerm2" >&2
-    fi
+    warn_if_not_iterm2 "progress"
     local value="$1"
     if [[ "$value" == "done" ]]; then
         # Clear progress indicator
         osc 9 "RemoveBadge"
         iterm2_osc "RemoveBadge"
-    else
+    elif [[ "$value" =~ ^[0-9]+$ ]] && [[ "$value" -ge 0 ]] && [[ "$value" -le 100 ]]; then
         # Set progress (0-100)
         # Note: iTerm2 shows this in the tab title area
         osc 9 "Progress=${value}"
+    else
+        echo "Error: progress value must be 0-100 or 'done'" >&2
+        exit 1
     fi
 }
 
-cmd_info() {
+# Info display helpers for cmd_info
+print_env_vars() {
     echo "Terminal Information:"
     echo "  TERM:         ${TERM:-unset}"
     echo "  TERM_PROGRAM: ${TERM_PROGRAM:-unset}"
     echo "  COLORTERM:    ${COLORTERM:-unset}"
     echo "  ITERM_SESSION_ID: ${ITERM_SESSION_ID:-unset}"
+}
 
-    # Terminal size
+print_terminal_size() {
     if command -v tput &>/dev/null; then
         echo "  Columns:      $(tput cols)"
         echo "  Lines:        $(tput lines)"
         echo "  Colors:       $(tput colors)"
     fi
+}
 
-    # Detect capabilities
+print_capabilities() {
     echo ""
     echo "Detected capabilities:"
     if is_iterm2; then
@@ -208,47 +238,59 @@ cmd_info() {
         echo "  Generic:      assuming xterm-compatible"
     fi
 
-    # Check for 256 color support
+    # 256 color support
     if [[ "${TERM:-}" == *"256color"* ]] || [[ "${COLORTERM:-}" == "truecolor" ]]; then
         echo "  256 colors:   yes"
     fi
 
-    # Check for truecolor support
+    # Truecolor support
     if [[ "${COLORTERM:-}" == "truecolor" ]] || [[ "${COLORTERM:-}" == "24bit" ]]; then
         echo "  True color:   yes"
     fi
 }
 
-cmd_colors() {
+cmd_info() {
+    print_env_vars
+    print_terminal_size
+    print_capabilities
+}
+
+# Color display helpers for cmd_colors
+show_standard_colors() {
     echo "Standard colors (0-7):"
     for i in {0..7}; do
         printf '\033[48;5;%dm  %3d  \033[0m' "$i" "$i"
     done
     echo ""
+}
 
+show_bright_colors() {
     echo "Bright colors (8-15):"
     for i in {8..15}; do
         printf '\033[48;5;%dm  %3d  \033[0m' "$i" "$i"
     done
     echo ""
+}
 
+show_216_colors() {
     echo ""
     echo "216 colors (16-231):"
     for i in {16..231}; do
         printf '\033[48;5;%dm%4d\033[0m' "$i" "$i"
-        if (( (i - 15) % 36 == 0 )); then
-            echo ""
-        fi
+        (( (i - 15) % 36 == 0 )) && echo ""
     done
+}
 
+show_grayscale() {
     echo ""
     echo "Grayscale (232-255):"
     for i in {232..255}; do
         printf '\033[48;5;%dm %3d \033[0m' "$i" "$i"
     done
     echo ""
+}
 
-    # True color test if supported
+show_truecolor_gradient() {
     if [[ "${COLORTERM:-}" == "truecolor" ]] || [[ "${COLORTERM:-}" == "24bit" ]]; then
         echo ""
         echo "True color gradient:"
@@ -263,6 +305,14 @@ cmd_colors() {
     fi
 }
 
+cmd_colors() {
+    show_standard_colors
+    show_bright_colors
+    show_216_colors
+    show_grayscale
+    show_truecolor_gradient
+}
+
 cmd_cursor() {
     if [[ $# -eq 0 ]]; then
         echo "Usage: terminal cursor <style>" >&2
@@ -272,20 +322,21 @@ cmd_cursor() {
     fi
     local style="$1"
     local code
+    # DECSCUSR codes: odd=blinking, even=steady; 1-2=block, 3-4=underline, 5-6=bar
     case "$style" in
-        block)          code=2 ;;
-        block-blink)    code=1 ;;
-        underline)      code=4 ;;
-        underline-blink) code=3 ;;
-        bar)            code=6 ;;
-        bar-blink)      code=5 ;;
+        block)           code=2 ;;  # steady block
+        block-blink)     code=1 ;;  # blinking block
+        underline)       code=4 ;;  # steady underline
+        underline-blink) code=3 ;;  # blinking underline
+        bar)             code=6 ;;  # steady bar (I-beam)
+        bar-blink)       code=5 ;;  # blinking bar
         *)
             echo "Unknown cursor style: $style" >&2
             echo "Valid styles: block, underline, bar (append -blink for blinking)" >&2
             exit 1
             ;;
     esac
-    # DECSCUSR - Set Cursor Style
+    # DECSCUSR - Set Cursor Style (CSI Ps SP q)
     printf '\033[%d q' "$code"
 }
 
@@ -305,12 +356,12 @@ cmd_clipboard() {
             echo "(Note: clipboard response is sent to terminal input)" >&2
             ;;
         set)
+            local content
             if [[ $# -eq 0 ]]; then
                 # Read from stdin
-                local content
                 content=$(cat)
             else
-                local content="$*"
+                content="$*"
             fi
             local encoded
             encoded=$(printf '%s' "$content" | base64 | tr -d '\n')
@@ -340,11 +391,13 @@ cmd_image() {
         # iTerm2 inline image protocol
         local filename
         filename=$(basename "$file")
-        local encoded
-        encoded=$(base64 < "$file")
+        local encoded_name
+        encoded_name=$(printf '%s' "$filename" | base64 | tr -d '\n')
+        local encoded_data
+        encoded_data=$(base64 < "$file" | tr -d '\n')
         printf '\033]1337;File=name=%s;inline=1:%s\007' \
-            "$(printf '%s' "$filename" | base64)" \
-            "$encoded"
+            "$encoded_name" \
+            "$encoded_data"
     else
         # Try kitty protocol as fallback
         # Note: This is a simplified implementation
