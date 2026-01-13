@@ -44,14 +44,14 @@ escape_visible() {
 
 @test "help flag shows usage information" {
     run "$SCRIPT" --help
-    [[ "$status" -eq 1 ]]
+    [[ "$status" -eq 0 ]]
     [[ "$output" =~ "Usage: terminal <command>" ]]
     [[ "$output" =~ "Commands:" ]]
 }
 
 @test "short help flag shows usage information" {
     run "$SCRIPT" -h
-    [[ "$status" -eq 1 ]]
+    [[ "$status" -eq 0 ]]
     [[ "$output" =~ "Usage: terminal <command>" ]]
 }
 

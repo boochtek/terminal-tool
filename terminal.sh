@@ -4,7 +4,7 @@
 
 set -euo pipefail
 
-VERSION="0.9.0"
+VERSION="0.9.1"
 
 # Detect terminal type
 is_iterm2() {
@@ -15,9 +15,12 @@ is_apple_terminal() {
     [[ "${TERM_PROGRAM:-}" == "Apple_Terminal" ]]
 }
 
-# Main usage
+# Main usage - prints to stdout for --help, stderr for errors
 usage() {
-    cat >&2 <<EOF
+    local exit_code="${1:-1}"
+    local output="/dev/stderr"
+    [[ "$exit_code" -eq 0 ]] && output="/dev/stdout"
+    cat > "$output" <<EOF
 Usage: terminal <command> [args]
 
 Terminal utilities for window/tab manipulation.
@@ -44,7 +47,7 @@ Options:
   --version              Show version number
 
 EOF
-    exit 1
+    exit "$exit_code"
 }
 
 # OSC (Operating System Command) helper
@@ -373,7 +376,7 @@ fi
 
 case "$1" in
     --help|-h)
-        usage
+        usage 0
         ;;
     --version|-v)
         echo "terminal $VERSION"
